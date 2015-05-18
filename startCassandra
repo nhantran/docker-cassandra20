@@ -1,6 +1,6 @@
 #!/bin/bash
 
-if [ "$#" == "0"]; then
+if [ "$#" == "0" ]; then
 	SEED_IPS=$(awk 'NR==1 {print $1}' /etc/hosts)
 	HOST_IP=$SEED_IPS
 	echo "Running the container at local using SEED_IPS=$SEED_IPS and HOST_IP=$HOST_IP"
