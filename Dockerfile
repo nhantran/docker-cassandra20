@@ -4,6 +4,7 @@ ENV REFRESHED_AT 2015-05-06
 
 RUN wget http://downloads.datastax.com/community/dsc-cassandra-2.0.14-bin.tar.gz
 RUN tar xvf dsc-cassandra-2.0.14-bin.tar.gz
+RUN rm dsc-cassandra-2.0.14-bin.tar.gz
 RUN mv dsc-cassandra-2.0.14 /opt/cassandra
 ENV CASSANDRA_HOME /opt/cassandra
 
