@@ -18,8 +18,11 @@ RUN sysctl -p
 ADD startCassandra $CASSANDRA_HOME/bin/
 RUN chmod u+x $CASSANDRA_HOME/bin/startCassandra
 
+RUN mkdir /opt/shared
+VOLUME ["/opt/shared"]
+
 EXPOSE 7000 7199 9042 9160 61621
 
 ENTRYPOINT [ "/opt/cassandra/bin/startCassandra" ]
 
-CMD []
+CMD ["1", "1"]

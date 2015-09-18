@@ -1,18 +1,155 @@
 #!/bin/bash
 
-if [ "$#" == "0" ]; then
-	SEED_IPS=$(awk 'NR==1 {print $1}' /etc/hosts)
-	HOST_IP=$SEED_IPS
-	echo "Running the container at local using SEED_IPS=$SEED_IPS and HOST_IP=$HOST_IP"
+readonly PROGNAME=$(basename "$0")
+readonly SHARED_FOLDER="/opt/shared"
+readonly CONTAINER_IPS_FOLDER="$SHARED_FOLDER/ips"
+readonly LOCK_FD=200
+# Get current docker IP from hosts file
+readonly MY_DOCKER_IP=$(awk 'NR==1 {print $1}' /etc/hosts)
+readonly MY_HOST_NAME=`hostname`
+SEED_IPS=
+
+function lock() {
+    local lock_file=$SHARED_FOLDER/$PROGNAME.lock
+
+    # create lock file
+    eval "exec $LOCK_FD>$lock_file"
+
+    # acquire the lock
+    flock -n $LOCK_FD && return 0 || return 1
+}
+
+function unlock() {
+	flock -u $LOCK_FD && return 0 || return 1
+}
+
+function get_container_count () {
+  return "$(ls -1 $CONTAINER_IPS_FOLDER | wc -l)"
+}
+
+function get_final_seed_ips () {
+	local num_of_seeds=$1
+	local content=$(cat $SHARED_FOLDER/seeds.txt)
+	# Read content of seeds.txt into SEED_IPS_ARRAY
+	IFS=',' read -a array <<< "$content"
+	while [[ "${#array[@]}" -lt "$num_of_seeds" ]]; do
+		sleep 1
+		content=$(cat $SHARED_FOLDER/seeds.txt)
+		IFS=',' read -a array <<< "$content"
+	done
+	SEED_IPS=$content
+	return 0
+}
+
+function init_data_structure() {
+	if [[ ! -d "$CONTAINER_IPS_FOLDER" ]]; then
+		echo "Creating folder $CONTAINER_IPS_FOLDER"
+		mkdir "$CONTAINER_IPS_FOLDER"
+	fi
+	if [[ ! -f "$SHARED_FOLDER/seeds.txt" ]]; then
+		echo "Creating $SHARED_FOLDER/seeds.txt"
+		touch "$SHARED_FOLDER/seeds.txt"
+	fi
+	if [[ ! -f "$CONTAINER_IPS_FOLDER/$MY_HOST_NAME" ]]; then
+		echo "Creating $CONTAINER_IPS_FOLDER/$MY_HOST_NAME"
+		touch "$CONTAINER_IPS_FOLDER/$MY_HOST_NAME"
+		echo -n "$MY_DOCKER_IP" >> "$CONTAINER_IPS_FOLDER/$MY_HOST_NAME"
+	fi
+	return 0
+}
+
+function clean_files() {
+	if [[ -f "$CONTAINER_IPS_FOLDER/$MY_HOST_NAME" ]]; then
+		rm "$CONTAINER_IPS_FOLDER/$MY_HOST_NAME"
+	fi
+	if [[ -f "$SHARED_FOLDER/seeds.txt" ]]; then
+		rm "$SHARED_FOLDER/seeds.txt"
+	fi
+	if [[ -f "$SHARED_FOLDER/$PROGNAME.lock" ]]; then
+		rm "$SHARED_FOLDER/$PROGNAME.lock"
+	fi
+	return 0
+}
+
+function check_cassandra_started() {
+	local connection_count=`netstat -al|awk '{print $4}'|grep 9160|wc -l`
+	echo "[check_cassandra_started] Connection count: $connection_count"
+	if [[ "$connection_count" -gt "0" ]]; then
+		return 0
+	fi
+	return 1
+}
+
+NUM_OF_CONTAINERS=$1
+NUM_OF_SEEDS=$2
+
+init_data_structure
+
+# Checking if all containers started
+get_container_count
+container_count=$?
+while [[ "$container_count" != "$NUM_OF_CONTAINERS" ]]; do
+	get_container_count
+	container_count=$?
+	echo "$container_count/$NUM_OF_CONTAINERS containers started.."
+	sleep 1
+done
+echo "All containers started"
+
+# Add host entries
+for f in $CONTAINER_IPS_FOLDER/*
+do
+	IFS='/' read -a folders <<< "$f"
+	if [[ "${folders[-1]}" != "$MY_HOST_NAME" ]]; then
+  		IP=`cat $f`
+  		echo  "$IP ${folders[-1]}" >> /etc/hosts
+	fi
+done
+
+# Select seeds
+lock && lock_status=$?
+while [[ "$lock_status" == "1" ]]; do
+	sleep 1
+	lock &&	lock_status=$?
+done
+
+CURRENT_SEED_IPS=$(cat $SHARED_FOLDER/seeds.txt)
+# Read content of seeds.txt into SEED_IPS_ARRAY
+IFS=',' read -a SEED_IPS_ARRAY <<< "$CURRENT_SEED_IPS"
+# First container as seed. Add its IP to seeds.txt
+if [[ "${#SEED_IPS_ARRAY[@]}" == "0" ]]; then
+	echo -n "$MY_HOST_NAME" >> $SHARED_FOLDER/seeds.txt
+# Seeds are enough now. Do nothing
+elif [[ "${#SEED_IPS_ARRAY[@]}" == "$NUM_OF_SEEDS" ]]; then
+	echo "Seeds are enough for starting: $CURRENT_SEED_IPS"
+# Seeds are not enough. Append its IP to seeds.txt
 else
-	SEED_IPS=$1
-	HOST_IP=$2	
+	echo -n ",$MY_HOST_NAME" >> $SHARED_FOLDER/seeds.txt
 fi
+unlock
+
+get_final_seed_ips $NUM_OF_SEEDS
+HOST_IP="$MY_HOST_NAME"
+
+echo "Container $MY_HOST_NAME:$MY_DOCKER_IP, seed ips $SEED_IPS"
+
 
 sed -i -e "s/num_tokens/\#num_tokens/" /opt/cassandra/conf/cassandra.yaml
 sed -i -e "s/- seeds: \"127.0.0.1\"/- seeds: \"$SEED_IPS\"/g" /opt/cassandra/conf/cassandra.yaml
 sed -i -e "s/listen_address: localhost/listen_address: $HOST_IP/g" /opt/cassandra/conf/cassandra.yaml
 sed -i -e "s/rpc_address: localhost/rpc_address: 0.0.0.0/g" /opt/cassandra/conf/cassandra.yaml
 sed -i -e "s/endpoint_snitch: SimpleSnitch/endpoint_snitch: GossipingPropertyFileSnitch/g" /opt/cassandra/conf/cassandra.yaml
+(
+	check_cassandra_started
+	started=$?
+	while [[ "$started" -gt "0" ]]; do
+		echo "Sleeping 5s waiting for CC* started"
+		sleep 5
+		check_cassandra_started
+		started=$?
+	done
+	echo "Cassandra service on $MY_HOST_NAME:$MY_DOCKER_IP started!!!"
 
-/opt/cassandra/bin/cassandra -f
+	clean_files
+	
+) & /opt/cassandra/bin/cassandra -f
