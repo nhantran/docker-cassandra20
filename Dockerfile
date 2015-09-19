@@ -2,6 +2,7 @@ FROM nhantran/oraclejdk17
 MAINTAINER Nhan Tran <tranphanquocnhan@gmail.com>
 ENV REFRESHED_AT 2015-05-06
 
+RUN apt-get install -y python
 RUN wget http://downloads.datastax.com/community/dsc-cassandra-2.0.14-bin.tar.gz
 RUN tar xvf dsc-cassandra-2.0.14-bin.tar.gz
 RUN rm dsc-cassandra-2.0.14-bin.tar.gz
